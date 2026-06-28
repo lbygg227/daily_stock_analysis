@@ -18,6 +18,7 @@ def __getattr__(name: str):
     _lazy_map = {
         "AnalysisService": "src.services.analysis_service",
         "BacktestService": "src.services.backtest_service",
+        "FundamentalSyncService": "src.services.fundamental_sync",
         "HistoryService": "src.services.history_service",
         "StockService": "src.services.stock_service",
         "TaskService": "src.services.task_service",
@@ -33,6 +34,7 @@ def __getattr__(name: str):
 __all__ = [
     "AnalysisService",
     "BacktestService",
+    "FundamentalSyncService",
     "HistoryService",
     "StockService",
     "TaskService",

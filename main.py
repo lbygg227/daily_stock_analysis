@@ -269,6 +269,34 @@ def parse_arguments() -> argparse.Namespace:
   python main.py --single-notify    # 启用单股推送模式（每分析完一只立即推送）
   python main.py --schedule         # 启用定时任务模式
   python main.py --market-review    # 仅运行大盘复盘
+  python main.py --sync-fundamentals            # 同步全A股基本面数据
+  python main.py --sync-fundamentals --stocks 600519  # 仅同步指定股票
+  python main.py --sync-fundamentals --sync-valuation  # 同步基本面+估值快照
+  python main.py --import-theme-pack                   # 导入冷启动示例主题包（可选）
+  python main.py --sync-exposure-graph               # 图谱同步：补全别名与自选股节点
+  python main.py --extract-exposure-edges            # 从公告抽取暴露边写入图谱
+  python main.py --run-exposure-ingest --force-exposure-ingest
+  python main.py --run-event-delta --force-event-delta   # 处理 pending 事件并推送
+
+环境变量（暴露图谱 / 事件增量）:
+  EXPOSURE_GRAPH_ENABLED=true
+  EXPOSURE_EVENT_WORKER_ENABLED=true
+  EVENT_DELTA_ANALYSIS_ENABLED=true
+  EVENT_PUSH_SCOPE=watchlist
+  EVENT_PUSH_COOLDOWN_MINUTES=45
+
+环境变量（慢变数据本地缓存 / 闲时同步）:
+  FUNDAMENTAL_LOCAL_PREFER_ENABLED=true     # 分析时优先读本地 SQLite（默认 true）
+  FUNDAMENTAL_LOCAL_MAX_AGE_DAYS=180        # 本地财务数据有效期（天）
+  FUNDAMENTAL_SYNC_ENABLED=true             # 启用闲时基本面自动同步（清单+财务）
+  FUNDAMENTAL_SYNC_TIME=02:00               # 每日同步执行时间
+  FUNDAMENTAL_SYNC_RUN_IMMEDIATELY=false    # 启动时是否立即同步一次
+  FUNDAMENTAL_SYNC_INCLUDE_INDUSTRY=false   # 是否在每日同步中附带行业（较慢，建议用每周任务）
+  FUNDAMENTAL_SYNC_INCLUDE_VALUATION=false  # 同步估值快照（日变数据）
+  FUNDAMENTAL_SYNC_INDUSTRY_ENABLED=true    # 启用每周行业补全
+  FUNDAMENTAL_SYNC_INDUSTRY_TIME=03:00      # 每周行业补全执行时间
+  FUNDAMENTAL_SYNC_INDUSTRY_WEEKDAY=6       # 每周执行日（0=周一 .. 6=周日）
+  FUNDAMENTAL_SYNC_INDUSTRY_RUN_IMMEDIATELY=false  # 启动时是否立即补全行业
         '''
     )
 
@@ -414,6 +442,69 @@ def parse_arguments() -> argparse.Namespace:
         '--backtest-force',
         action='store_true',
         help='强制回测（即使已有回测结果也重新计算）'
+    )
+
+    # === 基本面数据同步 ===
+    parser.add_argument(
+        '--sync-fundamentals',
+        action='store_true',
+        help='同步全A股基本面数据到本地数据库（股票清单+财务指标）'
+    )
+
+    parser.add_argument(
+        '--sync-valuation',
+        action='store_true',
+        help='同步全A股估值快照（百度估值源，较慢，建议配合 --sync-fundamentals 使用）'
+    )
+
+    parser.add_argument(
+        '--sync-industry',
+        action='store_true',
+        help='从 THS 补充行业分类（较慢，建议配合 --sync-fundamentals 使用）'
+    )
+
+    parser.add_argument(
+        '--import-theme-pack',
+        nargs='?',
+        const='changxin_chain',
+        metavar='PACK_OR_PATH',
+        help='导入冷启动主题包 YAML（示例：changxin_chain；非日常业务配置）'
+    )
+
+    parser.add_argument(
+        '--run-exposure-ingest',
+        action='store_true',
+        help='运行一次事件 ingest；若启用 EVENT_DELTA_ANALYSIS 则衔接增量推送'
+    )
+
+    parser.add_argument(
+        '--force-exposure-ingest',
+        action='store_true',
+        help='配合 --run-exposure-ingest，非交易时段也执行'
+    )
+
+    parser.add_argument(
+        '--run-event-delta',
+        action='store_true',
+        help='处理 pending 的 event_signal，执行增量分析与条件推送'
+    )
+
+    parser.add_argument(
+        '--force-event-delta',
+        action='store_true',
+        help='配合 --run-event-delta，忽略交易时段门控'
+    )
+
+    parser.add_argument(
+        '--sync-exposure-graph',
+        action='store_true',
+        help='从暴露边补全实体别名，并为自选股同步图谱节点（不拉新闻）'
+    )
+
+    parser.add_argument(
+        '--extract-exposure-edges',
+        action='store_true',
+        help='从自选股相关公告抽取参股/投资/合作等暴露边并写入图谱'
     )
 
     return parser.parse_args()
@@ -822,6 +913,183 @@ def _build_schedule_time_provider(default_schedule_time: str):
     return _provider
 
 
+def _build_fundamental_sync_time_provider(default_sync_time: str):
+    """Read the latest fundamental sync time from the active config file."""
+    from src.core.config_manager import ConfigManager
+
+    _SYSTEM_DEFAULT_SYNC_TIME = "02:00"
+    manager = ConfigManager()
+
+    def _provider() -> str:
+        if "FUNDAMENTAL_SYNC_TIME" in _INITIAL_PROCESS_ENV:
+            return os.getenv("FUNDAMENTAL_SYNC_TIME", default_sync_time)
+
+        config_map = manager.read_config_map()
+        sync_time = (config_map.get("FUNDAMENTAL_SYNC_TIME", "") or "").strip()
+        if sync_time:
+            return sync_time
+        return _SYSTEM_DEFAULT_SYNC_TIME
+
+    return _provider
+
+
+def _build_fundamental_industry_time_provider(default_sync_time: str):
+    """Read the latest industry sync time from the active config file."""
+    from src.core.config_manager import ConfigManager
+
+    _SYSTEM_DEFAULT_SYNC_TIME = "03:00"
+    manager = ConfigManager()
+
+    def _provider() -> str:
+        if "FUNDAMENTAL_SYNC_INDUSTRY_TIME" in _INITIAL_PROCESS_ENV:
+            return os.getenv("FUNDAMENTAL_SYNC_INDUSTRY_TIME", default_sync_time)
+
+        config_map = manager.read_config_map()
+        sync_time = (config_map.get("FUNDAMENTAL_SYNC_INDUSTRY_TIME", "") or "").strip()
+        if sync_time:
+            return sync_time
+        return _SYSTEM_DEFAULT_SYNC_TIME
+
+    return _provider
+
+
+def _build_fundamental_sync_daily_task(config: Config) -> Dict[str, Any]:
+    """Build the scheduled off-peak fundamental sync daily task definition."""
+    def _task() -> None:
+        from src.services.fundamental_sync_task import run_scheduled_fundamental_sync
+
+        run_scheduled_fundamental_sync(_reload_runtime_config())
+
+    return {
+        "name": "fundamental_sync",
+        "task": _task,
+        "schedule_time": config.fundamental_sync_time,
+        "run_immediately": config.fundamental_sync_run_immediately,
+        "schedule_time_provider": _build_fundamental_sync_time_provider(
+            config.fundamental_sync_time
+        ),
+    }
+
+
+def _build_fundamental_industry_weekly_task(config: Config) -> Dict[str, Any]:
+    """Build the scheduled weekly industry enrichment task definition."""
+
+    def _task() -> None:
+        from src.services.fundamental_sync_task import run_scheduled_industry_sync
+
+        run_scheduled_industry_sync(_reload_runtime_config())
+
+    return {
+        "name": "fundamental_industry_sync",
+        "task": _task,
+        "schedule_time": config.fundamental_sync_industry_time,
+        "weekday": config.fundamental_sync_industry_weekday,
+        "run_immediately": config.fundamental_sync_industry_run_immediately,
+        "schedule_time_provider": _build_fundamental_industry_time_provider(
+            config.fundamental_sync_industry_time
+        ),
+    }
+
+
+def _build_exposure_event_background_task(config_provider: Callable[[], Config]) -> Optional[Dict[str, Any]]:
+    """Register ExposureEventWorker when enabled in config."""
+    config = config_provider()
+    if not getattr(config, "exposure_event_worker_enabled", False):
+        return None
+    if not (
+        getattr(config, "theme_news_ingest_enabled", False)
+        or getattr(config, "announcement_monitor_enabled", False)
+    ):
+        return None
+
+    from src.services.exposure_event_worker import ExposureEventWorker
+
+    worker = ExposureEventWorker(config_provider=config_provider)
+    interval_minutes = max(1, getattr(config, "theme_news_interval_minutes", 15))
+
+    def exposure_event_task() -> None:
+        stats = worker.run_once()
+        if stats.get("inserted"):
+            logger.info(
+                "[ExposureEventWorker] 本轮写入 %d 条 event_signal",
+                stats.get("inserted", 0),
+            )
+
+    return {
+        "task": exposure_event_task,
+        "interval_seconds": interval_minutes * 60,
+        "run_immediately": False,
+        "name": "exposure_event_worker",
+    }
+
+
+def _collect_background_tasks(config_provider: Callable[[], Config]) -> List[Dict[str, Any]]:
+    tasks: List[Dict[str, Any]] = []
+    config = config_provider()
+
+    if getattr(config, "agent_event_monitor_enabled", False):
+        from src.services.alert_worker import AlertWorker
+
+        interval_minutes = max(1, getattr(config, "agent_event_monitor_interval_minutes", 5))
+        alert_worker = AlertWorker(config_provider=config_provider)
+
+        def event_monitor_task() -> None:
+            stats = alert_worker.run_once()
+            triggered_count = stats.get("triggered", 0)
+            if triggered_count:
+                logger.info("[EventMonitor] 本轮触发 %d 条提醒", triggered_count)
+
+        tasks.append({
+            "task": event_monitor_task,
+            "interval_seconds": interval_minutes * 60,
+            "run_immediately": True,
+            "name": "agent_event_monitor",
+        })
+
+    exposure_task = _build_exposure_event_background_task(config_provider)
+    if exposure_task is not None:
+        tasks.append(exposure_task)
+
+    return tasks
+
+
+def _build_exposure_extraction_daily_task(config: Config) -> Dict[str, Any]:
+    """Build daily exposure edge extraction from announcements."""
+
+    def _task() -> None:
+        from src.services.exposure_extraction_task import run_scheduled_exposure_extraction
+
+        run_scheduled_exposure_extraction(_reload_runtime_config())
+
+    return {
+        "name": "exposure_extraction",
+        "task": _task,
+        "schedule_time": config.fundamental_sync_time,
+        "run_immediately": False,
+        "schedule_time_provider": _build_fundamental_sync_time_provider(
+            config.fundamental_sync_time
+        ),
+    }
+
+
+def _collect_extra_daily_tasks(config: Config) -> List[Dict[str, Any]]:
+    """Collect optional daily tasks that should run alongside analysis scheduling."""
+    tasks: List[Dict[str, Any]] = []
+    if config.fundamental_sync_enabled:
+        tasks.append(_build_fundamental_sync_daily_task(config))
+    if getattr(config, "exposure_extraction_enabled", False):
+        tasks.append(_build_exposure_extraction_daily_task(config))
+    return tasks
+
+
+def _collect_extra_weekly_tasks(config: Config) -> List[Dict[str, Any]]:
+    """Collect optional weekly tasks that should run alongside scheduling."""
+    tasks: List[Dict[str, Any]] = []
+    if config.fundamental_sync_industry_enabled:
+        tasks.append(_build_fundamental_industry_weekly_task(config))
+    return tasks
+
+
 def main() -> int:
     """
     主入口函数
@@ -952,6 +1220,143 @@ def main() -> int:
             )
             return 0
 
+        # 模式0.5: 基本面数据同步
+        if getattr(args, 'sync_fundamentals', False):
+            logger.info("模式: 基本面数据同步")
+            from src.services.fundamental_sync import FundamentalSyncService
+
+            svc = FundamentalSyncService()
+            sync_stocks = stock_codes  # None = 全量
+
+            result = svc.full_sync(
+                stocks=sync_stocks,
+                include_financials=True,
+                include_valuation=getattr(args, 'sync_valuation', False),
+                include_industry_enrich=getattr(args, 'sync_industry', False),
+            )
+            logger.info(
+                f"基本面同步完成: stock_list={result['stock_list_count']} "
+                f"industry_enriched={result['industry_enriched']} "
+                f"financials={result['financials']} "
+                f"valuation={result['valuation_count']}"
+            )
+            return 0
+
+        # 模式0.6: 主题包导入（暴露图谱 Phase 1）
+        import_theme_pack_arg = getattr(args, 'import_theme_pack', None)
+        if import_theme_pack_arg is not None:
+            from src.services.theme_pack_importer import import_theme_pack
+
+            target = import_theme_pack_arg
+            if str(target).lower().endswith(('.yaml', '.yml')):
+                stats = import_theme_pack(path=target)
+            else:
+                stats = import_theme_pack(pack_id=str(target))
+            logger.info(
+                "主题包导入完成: aliases=%s profiles=%s exposures=%s errors=%s",
+                stats.get("entity_aliases"),
+                stats.get("company_profiles"),
+                stats.get("exposures"),
+                stats.get("errors"),
+            )
+            return 0 if stats.get("errors", 0) == 0 else 1
+
+        # 模式0.7: 单次事件 ingest（Phase 2a）
+        if getattr(args, 'run_exposure_ingest', False):
+            from src.services.exposure_event_worker import ExposureEventWorker
+
+            worker = ExposureEventWorker(config_provider=_reload_runtime_config)
+            stats = worker.run_once(
+                force=getattr(args, 'force_exposure_ingest', False),
+                ignore_enable_flags=True,
+            )
+            logger.info(
+                "事件 ingest 完成: ingested=%s inserted=%s matched=%s session_skipped=%s "
+                "delta_pushed=%s",
+                stats.get("ingested"),
+                stats.get("inserted"),
+                stats.get("matched"),
+                stats.get("session_skipped"),
+                stats.get("delta_pushed", 0),
+            )
+            return 0
+
+        # 模式0.72: 事件增量分析 + 推送（Phase 3）
+        if getattr(args, 'run_event_delta', False):
+            from src.services.event_delta_processor import EventDeltaProcessor
+            from src.services.exposure_event_worker import ExposureEventWorker
+
+            runtime_config = _reload_runtime_config()
+            worker = ExposureEventWorker(config_provider=lambda: runtime_config)
+            processor = EventDeltaProcessor(
+                stock_name_resolver=worker.stock_name_provider,
+            )
+            stats = processor.process_pending(
+                runtime_config,
+                force=getattr(args, 'force_event_delta', False),
+            )
+            logger.info(
+                "事件增量处理完成: signals=%s analyzed=%s pushed=%s skipped=%s",
+                stats.get("signals"),
+                stats.get("analyzed"),
+                stats.get("pushed"),
+                stats.get("skipped"),
+            )
+            return 0
+
+        # 模式0.75: 图谱同步（补全实体别名 / 自选股节点）
+        if getattr(args, 'sync_exposure_graph', False):
+            from src.services.exposure_event_worker import ExposureEventWorker
+            from src.services.exposure_graph_sync import ExposureGraphSyncService
+
+            runtime_config = _reload_runtime_config()
+            sync = ExposureGraphSyncService()
+            codes = stock_codes if stock_codes is not None else list(runtime_config.stock_list or [])
+            worker = ExposureEventWorker(config_provider=lambda: runtime_config)
+            created = sync.ensure_entity_aliases_from_exposures()
+            watchlist = sync.sync_watchlist_company_entities(
+                codes,
+                name_resolver=worker.stock_name_provider,
+            )
+            queries = sync.build_ingest_queries_from_graph(
+                max_queries=runtime_config.exposure_ingest_max_queries,
+                watchlist_codes=codes,
+                name_resolver=worker.stock_name_provider,
+            )
+            logger.info(
+                "图谱同步完成: entity_stubs=%s watchlist_nodes=%s ingest_queries=%s",
+                created,
+                watchlist,
+                len(queries),
+            )
+            return 0
+
+        # 模式0.8: 公告抽取暴露边（Phase 2b）
+        if getattr(args, 'extract_exposure_edges', False):
+            from src.services.exposure_event_worker import ExposureEventWorker
+            from src.services.exposure_edge_extractor import ExposureEdgeExtractor
+
+            runtime_config = _reload_runtime_config()
+            worker = ExposureEventWorker(config_provider=lambda: runtime_config)
+            extractor = ExposureEdgeExtractor(
+                stock_name_resolver=worker.stock_name_provider,
+            )
+            if stock_codes is not None:
+                stats = extractor.extract_for_codes(
+                    stock_codes,
+                    max_results_per_code=runtime_config.exposure_extraction_max_per_code,
+                )
+            else:
+                stats = extractor.extract_from_config(runtime_config)
+            logger.info(
+                "公告抽取暴露边完成: codes=%s edges_saved=%s parsed=%s skipped=%s",
+                stats.get("codes"),
+                stats.get("edges_saved"),
+                stats.get("parsed"),
+                stats.get("skipped"),
+            )
+            return 0
+
         # 模式1: 仅大盘复盘
         if args.market_review:
             from src.core.market_review import run_market_review
@@ -1009,25 +1414,7 @@ def main() -> int:
                 runtime_config = _reload_runtime_config()
                 run_full_analysis(runtime_config, args, scheduled_stock_codes)
 
-            background_tasks = []
-            if getattr(config, 'agent_event_monitor_enabled', False):
-                from src.services.alert_worker import AlertWorker
-
-                interval_minutes = max(1, getattr(config, 'agent_event_monitor_interval_minutes', 5))
-                alert_worker = AlertWorker(config_provider=_reload_runtime_config)
-
-                def event_monitor_task():
-                    stats = alert_worker.run_once()
-                    triggered_count = stats.get("triggered", 0)
-                    if triggered_count:
-                        logger.info("[EventMonitor] 本轮触发 %d 条提醒", triggered_count)
-
-                background_tasks.append({
-                    "task": event_monitor_task,
-                    "interval_seconds": interval_minutes * 60,
-                    "run_immediately": True,
-                    "name": "agent_event_monitor",
-                })
+            background_tasks = _collect_background_tasks(_reload_runtime_config)
 
             run_with_schedule(
                 task=scheduled_task,
@@ -1035,6 +1422,30 @@ def main() -> int:
                 run_immediately=should_run_immediately,
                 background_tasks=background_tasks,
                 schedule_time_provider=schedule_time_provider,
+                extra_daily_tasks=_collect_extra_daily_tasks(config),
+                extra_weekly_tasks=_collect_extra_weekly_tasks(config),
+            )
+            return 0
+
+        # 模式2.5: 仅基本面闲时同步调度（不跑分析）
+        if config.fundamental_sync_enabled or config.fundamental_sync_industry_enabled:
+            logger.info("模式: 基本面闲时同步调度")
+            if config.fundamental_sync_enabled:
+                logger.info("每日同步时间: %s", config.fundamental_sync_time)
+            if config.fundamental_sync_industry_enabled:
+                logger.info(
+                    "每周行业补全: weekday=%s time=%s",
+                    config.fundamental_sync_industry_weekday,
+                    config.fundamental_sync_industry_time,
+                )
+            from src.scheduler import run_with_schedule
+
+            run_with_schedule(
+                task=None,
+                enable_primary_daily_task=False,
+                background_tasks=_collect_background_tasks(_reload_runtime_config),
+                extra_daily_tasks=_collect_extra_daily_tasks(config),
+                extra_weekly_tasks=_collect_extra_weekly_tasks(config),
             )
             return 0
 

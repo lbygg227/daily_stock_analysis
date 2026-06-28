@@ -606,6 +606,14 @@ class DataFetcherManager:
         self._fundamental_cache_lock = RLock()
         self._fundamental_timeout_worker_limit = 8
         self._fundamental_timeout_slots = BoundedSemaphore(self._fundamental_timeout_worker_limit)
+        self._local_fundamental_provider = None
+
+    def _get_local_fundamental_provider(self):
+        if self._local_fundamental_provider is None:
+            from src.services.local_fundamental_provider import LocalFundamentalProvider
+
+            self._local_fundamental_provider = LocalFundamentalProvider()
+        return self._local_fundamental_provider
 
     def _ensure_concurrency_guards(self) -> None:
         """Lazily initialize thread-safety primitives for test scaffolds using __new__."""
@@ -1974,6 +1982,14 @@ class DataFetcherManager:
         if is_meaningful_stock_name(index_name, stock_code):
             return self._cache_stock_name(stock_code, index_name) or index_name
 
+        from src.config import get_config
+
+        runtime_config = get_config()
+        if runtime_config.fundamental_local_prefer_enabled:
+            listing = self._get_local_fundamental_provider().get_stock_listing(stock_code)
+            if listing is not None and is_meaningful_stock_name(listing.name, stock_code):
+                return self._cache_stock_name(stock_code, listing.name) or listing.name
+
         # 2. 尝试从实时行情中获取（最快，可按需禁用）
         if allow_realtime:
             quote = self.get_realtime_quote(raw_stock_code or stock_code, log_final_failure=False)
@@ -2787,10 +2803,23 @@ class DataFetcherManager:
             [valuation_err] if valuation_err else [],
         )
 
-        # growth / earnings / institution (one AkShare call)
-        if remaining_seconds <= 0:
+        # growth / earnings / institution (prefer local SQLite, otherwise AkShare)
+        local_bundle = None
+        if config.fundamental_local_prefer_enabled:
+            local_bundle = self._get_local_fundamental_provider().get_local_fundamental_bundle(
+                stock_code,
+                max_age_days=config.fundamental_local_max_age_days,
+            )
+
+        if local_bundle:
+            bundle_status = str(local_bundle.get("status", "partial"))
+            bundle_payload = local_bundle
+            bundle_errors: List[str] = list(local_bundle.get("errors", []))
+            bundle_ms = 0
+            logger.info("[基本面] %s growth/earnings 使用本地 SQLite 缓存", stock_code)
+        elif remaining_seconds <= 0:
             bundle_status = "failed"
-            bundle_payload: Dict[str, Any] = {}
+            bundle_payload = {}
             bundle_errors = ["fundamental stage timeout"]
             bundle_ms = 0
         else:
@@ -2813,7 +2842,7 @@ class DataFetcherManager:
 
         bundle_chain = self._normalize_source_chain(
             bundle_payload.get("source_chain", []),
-            "fundamental_bundle",
+            "local_sqlite" if local_bundle else "fundamental_bundle",
             bundle_status,
             bundle_ms,
         ) if isinstance(bundle_payload, dict) else self._normalize_source_chain(

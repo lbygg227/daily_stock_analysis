@@ -197,6 +197,48 @@ def parse_env_int(
     return parsed
 
 
+_WEEKDAY_NAME_TO_INDEX = {
+    "monday": 0,
+    "mon": 0,
+    "tuesday": 1,
+    "tue": 1,
+    "wednesday": 2,
+    "wed": 2,
+    "thursday": 3,
+    "thu": 3,
+    "friday": 4,
+    "fri": 4,
+    "saturday": 5,
+    "sat": 5,
+    "sunday": 6,
+    "sun": 6,
+}
+
+
+def parse_env_weekday(value: Optional[str], default: int = 6) -> int:
+    """Parse weekday for weekly scheduler tasks (0=Monday .. 6=Sunday)."""
+    if value is None or not str(value).strip():
+        return default
+    normalized = str(value).strip().lower()
+    if normalized.isdigit():
+        return parse_env_int(
+            normalized,
+            default,
+            field_name="FUNDAMENTAL_SYNC_INDUSTRY_WEEKDAY",
+            minimum=0,
+            maximum=6,
+        )
+    mapped = _WEEKDAY_NAME_TO_INDEX.get(normalized)
+    if mapped is None:
+        logger.warning(
+            "FUNDAMENTAL_SYNC_INDUSTRY_WEEKDAY=%r is invalid; falling back to %s",
+            value,
+            default,
+        )
+        return default
+    return mapped
+
+
 def parse_env_float(
     value: Optional[str],
     default: float,
@@ -937,6 +979,55 @@ class Config:
     fundamental_cache_ttl_seconds: int = 120
     # 基本面缓存最大条目数（避免长时间运行内存增长）
     fundamental_cache_max_entries: int = 256
+    # 分析时优先读取本地 SQLite 中的慢变基本面（股票清单、季度财务）
+    fundamental_local_prefer_enabled: bool = True
+    # 本地财务数据最大有效期（天），按最新报告期距今天数判断
+    fundamental_local_max_age_days: int = 180
+    # 闲时基本面同步：是否在定时调度模式下启用后台全量/增量同步
+    fundamental_sync_enabled: bool = False
+    # 闲时同步每日执行时间（HH:MM），与分析任务 SCHEDULE_TIME 独立
+    fundamental_sync_time: str = "02:00"
+    # 启动调度器时是否立即执行一次基本面同步
+    fundamental_sync_run_immediately: bool = False
+    # 闲时同步是否补充 THS 行业分类（较慢）
+    fundamental_sync_include_industry: bool = False
+    # 闲时同步是否拉取估值快照（日变数据，较慢）
+    fundamental_sync_include_valuation: bool = False
+    # 每周行业补全（与每日清单/财务同步分离，默认周日执行）
+    fundamental_sync_industry_enabled: bool = True
+    fundamental_sync_industry_time: str = "03:00"
+    # 0=Monday .. 6=Sunday
+    fundamental_sync_industry_weekday: int = 6
+    fundamental_sync_industry_run_immediately: bool = False
+
+    # === 暴露图谱 / 事件 ingest（Phase 2a）===
+    exposure_graph_enabled: bool = False
+    exposure_event_worker_enabled: bool = False
+    theme_news_ingest_enabled: bool = False
+    theme_news_interval_minutes: int = 15
+    # 已废弃为主路径：仅当 EXPOSURE_INGEST_QUERY_MODE=keywords|both 时作 fallback
+    theme_news_keywords: str = ""
+    exposure_ingest_query_mode: str = "graph"  # graph | keywords | both
+    exposure_ingest_max_queries: int = 20
+    announcement_monitor_enabled: bool = False
+    exposure_event_ingest_outside_session: bool = False
+    # Phase 2b：从公告/公开文本抽取暴露边写入图谱
+    exposure_extraction_enabled: bool = False
+    exposure_extraction_max_per_code: int = 5
+    # Phase 3：增量分析 + 事件推送
+    event_analysis_max_stocks: int = 5
+    event_delta_analysis_enabled: bool = False
+    event_delta_analysis_model: str = ""
+    event_llm_daily_budget: int = 100
+    event_push_cooldown_minutes: int = 45
+    event_push_min_confidence: str = "medium"
+    event_push_scope: str = "watchlist"  # watchlist | discover
+    event_baseline_stale_days: int = 3
+    event_baseline_max_age_days: int = 7
+    # Phase 4：板块共振
+    sector_resonance_enabled: bool = False
+    sector_resonance_min_members: int = 5
+    sector_resonance_min_up_ratio: float = 0.6
 
     # === Portfolio PR2: import/risk/fx settings ===
     portfolio_risk_concentration_alert_pct: float = 35.0
@@ -1775,6 +1866,140 @@ class Config:
                 256,
                 field_name='FUNDAMENTAL_CACHE_MAX_ENTRIES',
                 minimum=1,
+            ),
+            fundamental_local_prefer_enabled=os.getenv(
+                'FUNDAMENTAL_LOCAL_PREFER_ENABLED', 'true'
+            ).lower() == 'true',
+            fundamental_local_max_age_days=parse_env_int(
+                os.getenv('FUNDAMENTAL_LOCAL_MAX_AGE_DAYS'),
+                180,
+                field_name='FUNDAMENTAL_LOCAL_MAX_AGE_DAYS',
+                minimum=1,
+            ),
+            fundamental_sync_enabled=os.getenv(
+                'FUNDAMENTAL_SYNC_ENABLED', 'false'
+            ).lower() == 'true',
+            fundamental_sync_time=(
+                (os.getenv('FUNDAMENTAL_SYNC_TIME') or '02:00').strip() or '02:00'
+            ),
+            fundamental_sync_run_immediately=os.getenv(
+                'FUNDAMENTAL_SYNC_RUN_IMMEDIATELY', 'false'
+            ).lower() == 'true',
+            fundamental_sync_include_industry=os.getenv(
+                'FUNDAMENTAL_SYNC_INCLUDE_INDUSTRY', 'false'
+            ).lower() == 'true',
+            fundamental_sync_include_valuation=os.getenv(
+                'FUNDAMENTAL_SYNC_INCLUDE_VALUATION', 'false'
+            ).lower() == 'true',
+            fundamental_sync_industry_enabled=os.getenv(
+                'FUNDAMENTAL_SYNC_INDUSTRY_ENABLED', 'true'
+            ).lower() == 'true',
+            fundamental_sync_industry_time=(
+                (os.getenv('FUNDAMENTAL_SYNC_INDUSTRY_TIME') or '03:00').strip()
+                or '03:00'
+            ),
+            fundamental_sync_industry_weekday=parse_env_weekday(
+                os.getenv('FUNDAMENTAL_SYNC_INDUSTRY_WEEKDAY'),
+                default=6,
+            ),
+            fundamental_sync_industry_run_immediately=os.getenv(
+                'FUNDAMENTAL_SYNC_INDUSTRY_RUN_IMMEDIATELY', 'false'
+            ).lower() == 'true',
+            exposure_graph_enabled=os.getenv('EXPOSURE_GRAPH_ENABLED', 'false').lower() == 'true',
+            exposure_event_worker_enabled=os.getenv(
+                'EXPOSURE_EVENT_WORKER_ENABLED', 'false'
+            ).lower() == 'true',
+            theme_news_ingest_enabled=os.getenv(
+                'THEME_NEWS_INGEST_ENABLED', 'false'
+            ).lower() == 'true',
+            theme_news_interval_minutes=parse_env_int(
+                os.getenv('THEME_NEWS_INTERVAL_MINUTES'),
+                15,
+                field_name='THEME_NEWS_INTERVAL_MINUTES',
+                minimum=1,
+            ),
+            theme_news_keywords=(os.getenv('THEME_NEWS_KEYWORDS') or '').strip(),
+            exposure_ingest_query_mode=(
+                (os.getenv('EXPOSURE_INGEST_QUERY_MODE') or 'graph').strip().lower()
+                or 'graph'
+            ),
+            exposure_ingest_max_queries=parse_env_int(
+                os.getenv('EXPOSURE_INGEST_MAX_QUERIES'),
+                20,
+                field_name='EXPOSURE_INGEST_MAX_QUERIES',
+                minimum=1,
+            ),
+            announcement_monitor_enabled=os.getenv(
+                'ANNOUNCEMENT_MONITOR_ENABLED', 'false'
+            ).lower() == 'true',
+            exposure_event_ingest_outside_session=os.getenv(
+                'EVENT_INGEST_OUTSIDE_SESSION', 'false'
+            ).lower() == 'true',
+            exposure_extraction_enabled=os.getenv(
+                'EXPOSURE_EXTRACTION_ENABLED', 'false'
+            ).lower() == 'true',
+            exposure_extraction_max_per_code=parse_env_int(
+                os.getenv('EXPOSURE_EXTRACTION_MAX_PER_CODE'),
+                5,
+                field_name='EXPOSURE_EXTRACTION_MAX_PER_CODE',
+                minimum=1,
+            ),
+            event_analysis_max_stocks=parse_env_int(
+                os.getenv('EVENT_ANALYSIS_MAX_STOCKS'),
+                5,
+                field_name='EVENT_ANALYSIS_MAX_STOCKS',
+                minimum=1,
+            ),
+            event_delta_analysis_enabled=os.getenv(
+                'EVENT_DELTA_ANALYSIS_ENABLED', 'false'
+            ).lower() == 'true',
+            event_delta_analysis_model=(os.getenv('EVENT_DELTA_ANALYSIS_MODEL') or '').strip(),
+            event_llm_daily_budget=parse_env_int(
+                os.getenv('EVENT_LLM_DAILY_BUDGET'),
+                100,
+                field_name='EVENT_LLM_DAILY_BUDGET',
+                minimum=0,
+            ),
+            event_push_cooldown_minutes=parse_env_int(
+                os.getenv('EVENT_PUSH_COOLDOWN_MINUTES'),
+                45,
+                field_name='EVENT_PUSH_COOLDOWN_MINUTES',
+                minimum=1,
+            ),
+            event_push_min_confidence=(
+                (os.getenv('EVENT_PUSH_MIN_CONFIDENCE') or 'medium').strip().lower()
+                or 'medium'
+            ),
+            event_push_scope=(
+                (os.getenv('EVENT_PUSH_SCOPE') or 'watchlist').strip().lower()
+                or 'watchlist'
+            ),
+            event_baseline_stale_days=parse_env_int(
+                os.getenv('EVENT_BASELINE_STALE_DAYS'),
+                3,
+                field_name='EVENT_BASELINE_STALE_DAYS',
+                minimum=1,
+            ),
+            event_baseline_max_age_days=parse_env_int(
+                os.getenv('EVENT_BASELINE_MAX_AGE_DAYS'),
+                7,
+                field_name='EVENT_BASELINE_MAX_AGE_DAYS',
+                minimum=4,
+            ),
+            sector_resonance_enabled=os.getenv(
+                'SECTOR_RESONANCE_ENABLED', 'false'
+            ).lower() == 'true',
+            sector_resonance_min_members=parse_env_int(
+                os.getenv('SECTOR_RESONANCE_MIN_MEMBERS'),
+                5,
+                field_name='SECTOR_RESONANCE_MIN_MEMBERS',
+                minimum=1,
+            ),
+            sector_resonance_min_up_ratio=parse_env_float(
+                os.getenv('SECTOR_RESONANCE_MIN_UP_RATIO'),
+                0.6,
+                field_name='SECTOR_RESONANCE_MIN_UP_RATIO',
+                minimum=0.1,
             ),
             portfolio_risk_concentration_alert_pct=parse_env_float(
                 os.getenv('PORTFOLIO_RISK_CONCENTRATION_ALERT_PCT'),

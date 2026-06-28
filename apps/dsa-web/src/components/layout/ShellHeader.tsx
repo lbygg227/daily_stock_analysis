@@ -19,6 +19,7 @@ const TITLES: Record<string, { title: UiTextKey; description: UiTextKey }> = {
   '/screening': { title: 'layout.route.screening.title', description: 'layout.route.screening.description' },
   '/backtest': { title: 'layout.route.backtest.title', description: 'layout.route.backtest.description' },
   '/alerts': { title: 'layout.route.alerts.title', description: 'layout.route.alerts.description' },
+  '/exposure': { title: 'layout.route.exposure.title', description: 'layout.route.exposure.description' },
   '/settings': { title: 'layout.route.settings.title', description: 'layout.route.settings.description' },
 };
 

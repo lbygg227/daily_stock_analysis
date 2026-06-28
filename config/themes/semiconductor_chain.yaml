@@ -1,0 +1,249 @@
+# 半导体产业链主题包 — 冷启动种子（半导体/存储/光模块/设备/封装/PCB）
+# 用途：导入实体别名与自选股暴露边；日常 ingest 查询词由图谱自动推导。
+id: semiconductor_chain
+display_name: 半导体产业链
+
+entity_aliases:
+  - entity_id: semiconductors
+    display_name: 半导体
+    entity_type: theme
+    aliases:
+      - 半导体
+      - 芯片
+      - 集成电路
+      - IC
+      - 晶圆
+      - 国产芯片
+      - 半导体景气
+
+  - entity_id: storage
+    display_name: 存储
+    entity_type: theme
+    aliases:
+      - 存储
+      - 存储芯片
+      - DRAM
+      - NAND
+      - HBM
+      - 存储扩产
+      - 存储周期
+      - 国产存储
+
+  - entity_id: optical_module
+    display_name: 光模块
+    entity_type: theme
+    aliases:
+      - 光模块
+      - 800G光模块
+      - 1.6T
+      - 硅光
+      - CPO
+      - 光通信
+      - 高速光模块
+
+  - entity_id: semi_equipment
+    display_name: 半导体设备
+    entity_type: theme
+    aliases:
+      - 半导体设备
+      - 刻蚀设备
+      - 薄膜设备
+      - 光刻
+      - 国产设备
+      - 半导体装备
+      - 设备国产化
+
+  - entity_id: semi_packaging
+    display_name: 半导体封装
+    entity_type: theme
+    aliases:
+      - 半导体封装
+      - 先进封装
+      - Chiplet
+      - 封测
+      - OSAT
+      - 封装测试
+      - 2.5D封装
+      - 3D封装
+
+  - entity_id: pcb
+    display_name: PCB
+    entity_type: theme
+    aliases:
+      - PCB
+      - 印制电路板
+      - 高层板
+      - HDI
+      - 服务器PCB
+      - AI服务器PCB
+      - 载板
+
+company_profiles:
+  - code: "600487"
+    name: 亨通光电
+    surface_business: 光纤光缆、光通信与海洋通信
+    pricing_notes: 光通信基建与高速互联主题；硅光/CPO 叙事时常与光模块景气联动
+
+  - code: "600584"
+    name: 长电科技
+    surface_business: 集成电路封测（先进封装）
+    pricing_notes: 国内封测龙头；存储/HPC 先进封装景气与资本开支周期敏感
+
+  - code: "601066"
+    name: 中信建投
+    surface_business: 证券经纪与投行
+    pricing_notes: 非制造链标的；半导体板块行情与 IPO/再融资活动影响估值弹性
+
+  - code: "002409"
+    name: 雅克科技
+    surface_business: 电子材料（前驱体、光刻胶、封装材料等）
+    pricing_notes: 半导体材料国产化；设备与封装扩产带来材料需求
+
+  - code: "002463"
+    name: 沪电股份
+    surface_business: 印制电路板（通信/数据中心高层板）
+    pricing_notes: AI 服务器与高速网络 PCB 需求；与光模块/交换机出货景气相关
+
+exposures:
+  - code: "600487"
+    target_entity_id: optical_module
+    link_type: supply_chain
+    role: 光通信/光纤光缆
+    strength: high
+    direction: positive
+    pricing_driver: core_business
+    summary: 光纤光缆与光通信主业，高速互联与光模块产业链景气高度相关
+    source: theme_pack
+    source_ref: semiconductor_chain
+
+  - code: "600487"
+    target_entity_id: semiconductors
+    link_type: concept
+    role: 硅光/CPO 主题
+    strength: low
+    direction: positive
+    pricing_driver: theme_overlay
+    summary: 硅光、CPO 等叙事时常按半导体光互联主题定价
+    source: theme_pack
+    source_ref: semiconductor_chain
+
+  - code: "600584"
+    target_entity_id: semi_packaging
+    link_type: revenue_share
+    role: 封测龙头
+    strength: high
+    direction: positive
+    pricing_driver: core_business
+    summary: 集成电路封测主业，先进封装产能与景气为核心定价驱动
+    source: theme_pack
+    source_ref: semiconductor_chain
+
+  - code: "600584"
+    target_entity_id: semiconductors
+    link_type: supply_chain
+    role: 产业链封测环节
+    strength: high
+    direction: positive
+    pricing_driver: core_business
+    summary: 半导体制造后道关键环节，行业资本开支与稼动率影响显著
+    source: theme_pack
+    source_ref: semiconductor_chain
+
+  - code: "600584"
+    target_entity_id: storage
+    link_type: supply_chain
+    role: 存储先进封装
+    strength: medium
+    direction: positive
+    pricing_driver: mixed
+    summary: 存储芯片 HBM/先进封装需求上行时，封测龙头受益逻辑相对直接
+    source: theme_pack
+    source_ref: semiconductor_chain
+
+  - code: "601066"
+    target_entity_id: semiconductors
+    link_type: concept
+    role: 板块行情/投行覆盖
+    strength: low
+    direction: positive
+    pricing_driver: theme_overlay
+    summary: 券商标的，半导体板块β与投行活动影响弹性，非产业链制造暴露
+    source: theme_pack
+    source_ref: semiconductor_chain
+
+  - code: "002409"
+    target_entity_id: semiconductors
+    link_type: revenue_share
+    role: 电子材料
+    strength: high
+    direction: positive
+    pricing_driver: core_business
+    summary: 前驱体、光刻胶、封装材料等半导体材料为核心业务
+    source: theme_pack
+    source_ref: semiconductor_chain
+
+  - code: "002409"
+    target_entity_id: semi_equipment
+    link_type: supply_chain
+    role: 材料支撑设备国产化
+    strength: medium
+    direction: positive
+    pricing_driver: mixed
+    summary: 光刻胶/前驱体等关键材料与半导体设备国产化扩产共振
+    source: theme_pack
+    source_ref: semiconductor_chain
+
+  - code: "002409"
+    target_entity_id: semi_packaging
+    link_type: supply_chain
+    role: 封装材料
+    strength: medium
+    direction: positive
+    pricing_driver: core_business
+    summary: 封装材料需求随先进封装产能扩张而增长
+    source: theme_pack
+    source_ref: semiconductor_chain
+
+  - code: "002409"
+    target_entity_id: storage
+    link_type: concept
+    role: 存储材料主题
+    strength: low
+    direction: positive
+    pricing_driver: theme_overlay
+    summary: 存储扩产与材料国产化主题联动，权重低于核心半导体材料
+    source: theme_pack
+    source_ref: semiconductor_chain
+
+  - code: "002463"
+    target_entity_id: pcb
+    link_type: revenue_share
+    role: 高层PCB
+    strength: high
+    direction: positive
+    pricing_driver: core_business
+    summary: 通信与数据中心高层 PCB 为主业，AI 服务器需求为核心驱动
+    source: theme_pack
+    source_ref: semiconductor_chain
+
+  - code: "002463"
+    target_entity_id: optical_module
+    link_type: supply_chain
+    role: 高速互联PCB
+    strength: medium
+    direction: positive
+    pricing_driver: mixed
+    summary: 交换机/光模块相关高速 PCB 需求与光互联景气相关
+    source: theme_pack
+    source_ref: semiconductor_chain
+
+  - code: "002463"
+    target_entity_id: semiconductors
+    link_type: supply_chain
+    role: 半导体测试/载板
+    strength: medium
+    direction: positive
+    pricing_driver: mixed
+    summary: 半导体测试板、载板等配套需求随芯片与先进封装放量
+    source: theme_pack
+    source_ref: semiconductor_chain

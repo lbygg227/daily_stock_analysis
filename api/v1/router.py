@@ -19,6 +19,9 @@ from api.v1.endpoints import (
     auth,
     backtest,
     decision_signals,
+    fundamentals,
+    exposure,
+    events,
     health,
     history,
     portfolio,
@@ -105,4 +108,22 @@ router.include_router(
 router.include_router(
     health.router,
     tags=["Health"]
+)
+
+router.include_router(
+    fundamentals.router,
+    prefix="/fundamentals",
+    tags=["Fundamentals"]
+)
+
+router.include_router(
+    exposure.router,
+    prefix="/exposure",
+    tags=["Exposure"]
+)
+
+router.include_router(
+    events.router,
+    prefix="/events",
+    tags=["Events"]
 )

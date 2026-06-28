@@ -663,6 +663,16 @@ class StockAnalysisPipeline:
                         context_snapshot=context_snapshot,
                         save_snapshot=self.save_context_snapshot
                     )
+                    if saved_count:
+                        from src.services.baseline_cache_service import (
+                            refresh_baseline_cache_after_history_save,
+                        )
+                        refresh_baseline_cache_after_history_save(
+                            self.db,
+                            result,
+                            query_id,
+                            context_snapshot=context_snapshot,
+                        )
                     record_history_run(
                         report_saved=bool(saved_count),
                         metadata_saved=bool(saved_count),
@@ -1208,6 +1218,16 @@ class StockAnalysisPipeline:
                         context_snapshot=agent_context_snapshot,
                         save_snapshot=self.save_context_snapshot,
                     )
+                    if saved_count:
+                        from src.services.baseline_cache_service import (
+                            refresh_baseline_cache_after_history_save,
+                        )
+                        refresh_baseline_cache_after_history_save(
+                            self.db,
+                            result,
+                            query_id,
+                            context_snapshot=agent_context_snapshot,
+                        )
                     record_history_run(
                         report_saved=bool(saved_count),
                         metadata_saved=bool(saved_count),

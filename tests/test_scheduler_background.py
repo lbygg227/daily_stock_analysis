@@ -23,6 +23,20 @@ class _FakeJob:
         self.next_run = datetime(2026, 1, 1, hour, minute, 0)
         return self
 
+    def __getattr__(self, name):
+        if name in {
+            "monday",
+            "tuesday",
+            "wednesday",
+            "thursday",
+            "friday",
+            "saturday",
+            "sunday",
+            "day",
+        }:
+            return self
+        raise AttributeError(name)
+
     def do(self, fn):
         self.job_func = fn
         self._schedule_module.jobs.append(self)

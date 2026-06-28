@@ -850,6 +850,286 @@ class DecisionSignalRecord(Base):
     )
 
 
+class StockListing(Base):
+    """全A股股票清单（主表），用于基本面持久化。
+
+    数据来源：Sina (stock_info_a_code_name) + THS (stock_board_industry_name_ths)。
+    """
+
+    __tablename__ = 'stock_listing'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    code = Column(String(6), nullable=False, index=True)
+    name = Column(String(20), nullable=False)
+    market = Column(String(2), nullable=False, index=True)
+    industry_ths = Column(String(50), index=True)
+    sector_name = Column(String(50))
+    listing_date = Column(Date)
+    status = Column(String(10), nullable=False, default='listed', index=True)
+    created_at = Column(DateTime, default=utc_naive_now)
+    updated_at = Column(DateTime, default=utc_naive_now, onupdate=utc_naive_now)
+
+    __table_args__ = (
+        UniqueConstraint('code', name='uix_stock_listing_code'),
+    )
+
+    def __repr__(self) -> str:
+        return f"<StockListing(code={self.code}, name={self.name}, market={self.market})>"
+
+
+class FinancialAbstract(Base):
+    """季度财务指标摘要（THS 同花顺源）。
+
+    每行 = 一只股票的一个报告期，列 = 关键财务指标。
+    数据来源：akshare stock_financial_abstract_ths()。
+    """
+
+    __tablename__ = 'financial_abstract'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    code = Column(String(6), nullable=False, index=True)
+    report_period = Column(Date, nullable=False, index=True)
+
+    # 利润表核心
+    net_profit = Column(Float)
+    net_profit_yoy = Column(Float)
+    net_profit_deducted = Column(Float)
+    revenue = Column(Float)
+    revenue_yoy = Column(Float)
+
+    # 每股指标
+    eps = Column(Float)
+    bvps = Column(Float)
+    capital_reserve_ps = Column(Float)
+    retained_earnings_ps = Column(Float)
+    operating_cf_ps = Column(Float)
+
+    # 盈利能力
+    gross_margin = Column(Float)
+    net_margin = Column(Float)
+    roe = Column(Float)
+    roe_diluted = Column(Float)
+
+    # 财务风险
+    current_ratio = Column(Float)
+    quick_ratio = Column(Float)
+    debt_ratio = Column(Float)
+
+    # 营运能力
+    inventory_turnover = Column(Float)
+    receivables_turnover_days = Column(Float)
+    operating_cycle = Column(Float)
+
+    source = Column(String(10), nullable=False, default='THS')
+    created_at = Column(DateTime, default=utc_naive_now)
+
+    __table_args__ = (
+        UniqueConstraint('code', 'report_period', name='uix_financial_abstract_code_period'),
+        Index('ix_financial_abstract_code_period', 'code', 'report_period'),
+    )
+
+    def __repr__(self) -> str:
+        return f"<FinancialAbstract(code={self.code}, period={self.report_period})>"
+
+
+class ValuationDaily(Base):
+    """每日估值快照。
+
+    数据来源：百度估值 (stock_zh_valuation_baidu)。
+    """
+
+    __tablename__ = 'valuation_daily'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    code = Column(String(6), nullable=False, index=True)
+    trade_date = Column(Date, nullable=False, index=True)
+    val_market_cap = Column(Float)
+    created_at = Column(DateTime, default=utc_naive_now)
+
+    __table_args__ = (
+        UniqueConstraint('code', 'trade_date', name='uix_valuation_daily_code_date'),
+        Index('ix_valuation_daily_code_date', 'code', 'trade_date'),
+    )
+
+    def __repr__(self) -> str:
+        return f"<ValuationDaily(code={self.code}, date={self.trade_date})>"
+
+
+class EntityAlias(Base):
+    """暴露图谱实体别名（Layer 1），用于主题新闻/事件命中。"""
+
+    __tablename__ = 'entity_alias'
+
+    entity_id = Column(String(64), primary_key=True)
+    display_name = Column(String(100), nullable=False)
+    aliases_json = Column(Text, nullable=False, default='[]')
+    entity_type = Column(String(32), nullable=False, default='theme')
+    updated_at = Column(DateTime, default=utc_naive_now, onupdate=utc_naive_now)
+
+    def __repr__(self) -> str:
+        return f"<EntityAlias(entity_id={self.entity_id})>"
+
+
+class CompanyProfile(Base):
+    """A 股公司画像：表观主业与市场定价备注。"""
+
+    __tablename__ = 'company_profile'
+
+    code = Column(String(6), primary_key=True)
+    name = Column(String(50))
+    surface_business = Column(String(200))
+    pricing_notes = Column(Text)
+    industry_ths = Column(String(50))
+    updated_at = Column(DateTime, default=utc_naive_now, onupdate=utc_naive_now)
+
+    def __repr__(self) -> str:
+        return f"<CompanyProfile(code={self.code})>"
+
+
+class CompanyExposure(Base):
+    """A 股暴露边：公司与主题/实体之间的传导关系。"""
+
+    __tablename__ = 'company_exposure'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    code = Column(String(6), nullable=False, index=True)
+    target_entity_id = Column(String(64), nullable=False, index=True)
+    link_type = Column(String(32), nullable=False)
+    role = Column(String(100))
+    strength = Column(String(16), nullable=False, default='medium')
+    exposure_pct = Column(Float)
+    direction = Column(String(16), nullable=False, default='positive')
+    pricing_driver = Column(String(32), nullable=False, default='core_business')
+    summary = Column(Text)
+    source = Column(String(32), nullable=False, default='manual')
+    source_ref = Column(String(255))
+    verified_at = Column(DateTime)
+    ttl_days = Column(Integer, nullable=False, default=90)
+    created_at = Column(DateTime, default=utc_naive_now)
+    updated_at = Column(DateTime, default=utc_naive_now, onupdate=utc_naive_now)
+
+    __table_args__ = (
+        UniqueConstraint(
+            'code',
+            'target_entity_id',
+            'link_type',
+            name='uix_company_exposure_code_target_link',
+        ),
+        Index('ix_company_exposure_entity_code', 'target_entity_id', 'code'),
+    )
+
+    def __repr__(self) -> str:
+        return (
+            f"<CompanyExposure(code={self.code}, "
+            f"target={self.target_entity_id}, link={self.link_type})>"
+        )
+
+
+class AnalysisBaselineCache(Base):
+    """结构化分析基线缓存，供盘中增量分析读取。"""
+
+    __tablename__ = 'analysis_baseline_cache'
+
+    code = Column(String(6), primary_key=True)
+    baseline_history_id = Column(Integer)
+    operation_advice = Column(String(50))
+    core_thesis = Column(Text)
+    risks = Column(Text)
+    key_levels_json = Column(Text)
+    price_at_analysis = Column(Float)
+    tech_summary = Column(Text)
+    exposure_digest = Column(Text)
+    created_at = Column(DateTime, default=utc_naive_now, index=True)
+
+    def __repr__(self) -> str:
+        return f"<AnalysisBaselineCache(code={self.code})>"
+
+
+class EventSignal(Base):
+    """盘中事件信号（主题新闻/公告 ingest，Phase 2a）。"""
+
+    __tablename__ = 'event_signal'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    source_type = Column(String(16), nullable=False, index=True)  # news / announcement
+    source_url = Column(String(1000), nullable=False)
+    title = Column(String(500), nullable=False)
+    snippet = Column(Text)
+    published_at = Column(DateTime, index=True)
+    entities_json = Column(Text, nullable=False, default='[]')
+    event_type = Column(String(32))
+    sentiment = Column(String(16))
+    matched_codes_json = Column(Text, nullable=False, default='[]')
+    resonance_sector = Column(String(100))
+    dedup_key = Column(String(128), index=True)
+    status = Column(String(16), nullable=False, default='pending', index=True)
+    skip_reason = Column(String(64))
+    processed_at = Column(DateTime, default=utc_naive_now, index=True)
+
+    __table_args__ = (
+        UniqueConstraint('source_url', name='uix_event_signal_source_url'),
+        Index('ix_event_signal_dedup_processed', 'dedup_key', 'processed_at'),
+    )
+
+    def __repr__(self) -> str:
+        return f"<EventSignal(id={self.id}, status={self.status}, title={self.title[:20]}...)>"
+
+
+class EventPushCooldown(Base):
+    """事件推送冷却（Phase 3，对齐 alert_cooldown 语义）。"""
+
+    __tablename__ = 'event_push_cooldown'
+
+    code = Column(String(6), primary_key=True)
+    cooldown_until = Column(DateTime, nullable=False, index=True)
+    last_event_signal_id = Column(Integer)
+    reason = Column(String(128))
+    updated_at = Column(DateTime, default=utc_naive_now, onupdate=utc_naive_now)
+
+    def __repr__(self) -> str:
+        return f"<EventPushCooldown(code={self.code}, until={self.cooldown_until})>"
+
+
+class EventSectorCooldown(Base):
+    """板块共振推送冷却（Phase 4）。"""
+
+    __tablename__ = 'event_sector_cooldown'
+
+    sector_key = Column(String(128), primary_key=True)
+    cooldown_until = Column(DateTime, nullable=False, index=True)
+    last_event_signal_id = Column(Integer)
+    reason = Column(String(128))
+    updated_at = Column(DateTime, default=utc_naive_now, onupdate=utc_naive_now)
+
+    def __repr__(self) -> str:
+        return f"<EventSectorCooldown(sector={self.sector_key}, until={self.cooldown_until})>"
+
+
+class ExposureFeedback(Base):
+    """暴露图谱 / 事件运营反馈（Phase 5）。"""
+
+    __tablename__ = 'exposure_feedback'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    target_type = Column(String(32), nullable=False, index=True)  # exposure | event_signal
+    target_id = Column(Integer, nullable=False, index=True)
+    feedback_type = Column(String(32), nullable=False, index=True)
+    note = Column(Text)
+    code = Column(String(6), index=True)
+    entity_id = Column(String(64), index=True)
+    created_at = Column(DateTime, default=utc_naive_now, index=True)
+
+    __table_args__ = (
+        Index('ix_exposure_feedback_target', 'target_type', 'target_id'),
+    )
+
+    def __repr__(self) -> str:
+        return (
+            f"<ExposureFeedback(type={self.target_type}, "
+            f"id={self.target_id}, feedback={self.feedback_type})>"
+        )
+
+
 class _DatabaseManagerMeta(type):
     """Serialize DatabaseManager construction across __new__ and __init__."""
 

@@ -1,0 +1,65 @@
+# 长鑫产业链 — 【冷启动示例包，非运行时配置】
+# 用途：导入种子暴露边与实体别名；日常 ingest 查询词由图谱自动推导，勿在 .env 重复枚举。
+id: changxin_chain
+display_name: 长鑫产业链
+
+entity_aliases:
+  - entity_id: changxin
+    display_name: 长鑫存储
+    entity_type: theme
+    aliases:
+      - 长鑫
+      - 长鑫存储
+      - CXMT
+      - 国产存储
+      - 存储扩产
+
+  - entity_id: storage_shortage
+    display_name: 存储紧缺
+    entity_type: theme
+    aliases:
+      - 存储紧缺
+      - 存储涨价
+      - NAND
+      - DRAM
+      - 存储芯片
+
+company_profiles:
+  - code: "002208"
+    name: 合肥城建
+    surface_business: 房地产/城建开发
+    pricing_notes: 市场常按长鑫存储主题定价；地产主业偏弱，主题联动为主
+
+exposures:
+  - code: "002208"
+    target_entity_id: changxin
+    link_type: equity_investment
+    role: 参股/主题联动
+    strength: medium
+    direction: positive
+    pricing_driver: theme_overlay
+    summary: 参股长鑫相关主体，长鑫景气时市场常按主题外溢定价
+    source: manual
+    source_ref: "changxin_chain — 实施前请核实年报/公告持股比例与投资主体"
+
+  - code: "603986"
+    target_entity_id: changxin
+    link_type: concept
+    role: 存储产业链同业/国产替代主题
+    strength: low
+    direction: positive
+    pricing_driver: mixed
+    summary: 存储设计龙头，与长鑫同属国产存储景气主题，非直接股权关系
+    source: manual
+    source_ref: changxin_chain
+
+  - code: "301308"
+    target_entity_id: storage_shortage
+    link_type: supply_chain
+    role: 存储模组
+    strength: medium
+    direction: positive
+    pricing_driver: core_business
+    summary: 存储模组厂商，存储供需紧张时受益逻辑相对直接
+    source: manual
+    source_ref: changxin_chain

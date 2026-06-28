@@ -23,6 +23,16 @@ from typing import Any, Callable, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
+_WEEKDAY_SCHEDULE_NAMES = (
+    "monday",
+    "tuesday",
+    "wednesday",
+    "thursday",
+    "friday",
+    "saturday",
+    "sunday",
+)
+
 
 class GracefulShutdown:
     """
@@ -86,6 +96,8 @@ class Scheduler:
         self.shutdown_handler = GracefulShutdown()
         self._task_callback: Optional[Callable] = None
         self._daily_job: Optional[Any] = None
+        self._extra_daily_jobs: List[Dict[str, Any]] = []
+        self._extra_weekly_jobs: List[Dict[str, Any]] = []
         self._background_tasks: List[Dict[str, Any]] = []
         self._running = False
 
@@ -104,6 +116,60 @@ class Scheduler:
         if run_immediately:
             logger.info("立即执行一次任务...")
             self._safe_run_task()
+
+    def add_daily_task(
+        self,
+        task: Callable,
+        schedule_time: str,
+        *,
+        name: str,
+        run_immediately: bool = False,
+        schedule_time_provider: Optional[Callable[[], str]] = None,
+    ) -> None:
+        """Register an additional daily task at a specific time of day."""
+        entry: Dict[str, Any] = {
+            "name": name,
+            "task": task,
+            "schedule_time": schedule_time,
+            "job": None,
+            "schedule_time_provider": schedule_time_provider,
+        }
+        if not self._configure_extra_daily_job(entry, schedule_time):
+            raise ValueError(
+                f"无效的定时执行时间: {schedule_time!r} (task={name})"
+            )
+        self._extra_daily_jobs.append(entry)
+        if run_immediately:
+            logger.info("立即执行一次每日任务: %s", name)
+            self._safe_run_named_task(entry)
+
+    def add_weekly_task(
+        self,
+        task: Callable,
+        schedule_time: str,
+        weekday: int,
+        *,
+        name: str,
+        run_immediately: bool = False,
+        schedule_time_provider: Optional[Callable[[], str]] = None,
+    ) -> None:
+        """Register a weekly task on a specific weekday and time."""
+        entry: Dict[str, Any] = {
+            "name": name,
+            "task": task,
+            "schedule_time": schedule_time,
+            "weekday": weekday,
+            "job": None,
+            "schedule_time_provider": schedule_time_provider,
+        }
+        if not self._configure_extra_weekly_job(entry, schedule_time, weekday):
+            raise ValueError(
+                f"无效的每周定时配置: time={schedule_time!r}, weekday={weekday} (task={name})"
+            )
+        self._extra_weekly_jobs.append(entry)
+        if run_immediately:
+            logger.info("立即执行一次每周任务: %s", name)
+            self._safe_run_named_task(entry)
 
     @staticmethod
     def _is_valid_schedule_time(schedule_time: str) -> bool:
@@ -126,6 +192,30 @@ class Scheduler:
                 jobs.remove(self._daily_job)
 
         self._daily_job = None
+
+    def _cancel_extra_daily_job(self, entry: Dict[str, Any]) -> None:
+        job = entry.get("job")
+        if job is None:
+            return
+        if hasattr(self.schedule, "cancel_job"):
+            self.schedule.cancel_job(job)
+        else:  # pragma: no cover - compatibility fallback
+            jobs = getattr(self.schedule, "jobs", None)
+            if isinstance(jobs, list) and job in jobs:
+                jobs.remove(job)
+        entry["job"] = None
+
+    def _cancel_extra_weekly_job(self, entry: Dict[str, Any]) -> None:
+        job = entry.get("job")
+        if job is None:
+            return
+        if hasattr(self.schedule, "cancel_job"):
+            self.schedule.cancel_job(job)
+        else:  # pragma: no cover - compatibility fallback
+            jobs = getattr(self.schedule, "jobs", None)
+            if isinstance(jobs, list) and job in jobs:
+                jobs.remove(job)
+        entry["job"] = None
 
     def _configure_daily_task(self, schedule_time: str) -> bool:
         """(Re)register the daily job at the requested time."""
@@ -153,6 +243,90 @@ class Scheduler:
             )
         return True
 
+    def _configure_extra_daily_job(self, entry: Dict[str, Any], schedule_time: str) -> bool:
+        """(Re)register one named daily job at the requested time."""
+        candidate = (schedule_time or "").strip()
+        if not self._is_valid_schedule_time(candidate):
+            logger.warning(
+                "检测到无效的定时执行时间 %r，跳过任务 %s",
+                schedule_time,
+                entry.get("name"),
+            )
+            return False
+
+        previous_time = entry.get("schedule_time")
+        self._cancel_extra_daily_job(entry)
+        entry["job"] = self.schedule.every().day.at(candidate).do(
+            lambda current_entry=entry: self._safe_run_named_task(current_entry)
+        )
+        entry["schedule_time"] = candidate
+
+        if previous_time == candidate:
+            logger.info(
+                "已设置每日定时任务 [%s]，执行时间: %s",
+                entry.get("name"),
+                candidate,
+            )
+        else:
+            logger.info(
+                "已将每日定时任务 [%s] 从 %s 更新为 %s",
+                entry.get("name"),
+                previous_time,
+                candidate,
+            )
+        return True
+
+    def _configure_extra_weekly_job(
+        self,
+        entry: Dict[str, Any],
+        schedule_time: str,
+        weekday: int,
+    ) -> bool:
+        """(Re)register one named weekly job."""
+        candidate = (schedule_time or "").strip()
+        if not self._is_valid_schedule_time(candidate):
+            logger.warning(
+                "检测到无效的每周执行时间 %r，跳过任务 %s",
+                schedule_time,
+                entry.get("name"),
+            )
+            return False
+        if weekday < 0 or weekday >= len(_WEEKDAY_SCHEDULE_NAMES):
+            logger.warning(
+                "检测到无效的 weekly weekday=%r，跳过任务 %s",
+                weekday,
+                entry.get("name"),
+            )
+            return False
+
+        previous_time = entry.get("schedule_time")
+        previous_weekday = entry.get("weekday")
+        self._cancel_extra_weekly_job(entry)
+        weekday_name = _WEEKDAY_SCHEDULE_NAMES[weekday]
+        day_method = getattr(self.schedule.every(), weekday_name)
+        entry["job"] = day_method.at(candidate).do(
+            lambda current_entry=entry: self._safe_run_named_task(current_entry)
+        )
+        entry["schedule_time"] = candidate
+        entry["weekday"] = weekday
+
+        logger.info(
+            "已设置每周定时任务 [%s]，执行时间: 每%s %s",
+            entry.get("name"),
+            weekday_name,
+            candidate,
+        )
+        if previous_time not in (None, candidate) or previous_weekday not in (None, weekday):
+            logger.info(
+                "已将每周定时任务 [%s] 从 weekday=%s time=%s 更新为 weekday=%s time=%s",
+                entry.get("name"),
+                previous_weekday,
+                previous_time,
+                weekday,
+                candidate,
+            )
+        return True
+
     def _refresh_daily_schedule_if_needed(self) -> None:
         """Reload daily schedule time from the latest runtime config if needed."""
         if self._task_callback is None or self._schedule_time_provider is None:
@@ -170,6 +344,56 @@ class Scheduler:
         if self._configure_daily_task(latest_schedule_time):
             logger.info("更新后的下次执行时间: %s", self._get_next_run_time())
 
+    def _refresh_extra_daily_schedules_if_needed(self) -> None:
+        """Reload extra daily jobs when their configured times change."""
+        for entry in self._extra_daily_jobs:
+            provider = entry.get("schedule_time_provider")
+            if provider is None:
+                continue
+            try:
+                latest_schedule_time = (provider() or "").strip()
+            except Exception as exc:  # pragma: no cover - defensive branch
+                logger.warning(
+                    "读取任务 %s 的最新执行时间失败，继续沿用 %s: %s",
+                    entry.get("name"),
+                    entry.get("schedule_time"),
+                    exc,
+                )
+                continue
+            if (
+                not latest_schedule_time
+                or latest_schedule_time == entry.get("schedule_time")
+            ):
+                continue
+            self._configure_extra_daily_job(entry, latest_schedule_time)
+
+    def _refresh_extra_weekly_schedules_if_needed(self) -> None:
+        """Reload extra weekly jobs when their configured times change."""
+        for entry in self._extra_weekly_jobs:
+            provider = entry.get("schedule_time_provider")
+            if provider is None:
+                continue
+            try:
+                latest_schedule_time = (provider() or "").strip()
+            except Exception as exc:  # pragma: no cover - defensive branch
+                logger.warning(
+                    "读取任务 %s 的最新执行时间失败，继续沿用 %s: %s",
+                    entry.get("name"),
+                    entry.get("schedule_time"),
+                    exc,
+                )
+                continue
+            if (
+                not latest_schedule_time
+                or latest_schedule_time == entry.get("schedule_time")
+            ):
+                continue
+            self._configure_extra_weekly_job(
+                entry,
+                latest_schedule_time,
+                int(entry.get("weekday", 0)),
+            )
+
     def _safe_run_task(self):
         """安全执行任务（带异常捕获）"""
         if self._task_callback is None:
@@ -186,6 +410,29 @@ class Scheduler:
 
         except Exception as e:
             logger.exception(f"定时任务执行失败: {e}")
+
+    def _safe_run_named_task(self, entry: Dict[str, Any]) -> None:
+        """Safely execute one named daily task."""
+        task = entry.get("task")
+        if task is None:
+            return
+        task_name = entry.get("name") or "unnamed"
+        try:
+            logger.info("=" * 50)
+            logger.info(
+                "每日任务 [%s] 开始执行 - %s",
+                task_name,
+                datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            )
+            logger.info("=" * 50)
+            task()
+            logger.info(
+                "每日任务 [%s] 执行完成 - %s",
+                task_name,
+                datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            )
+        except Exception as exc:
+            logger.exception("每日任务 [%s] 执行失败: %s", task_name, exc)
 
     def add_background_task(
         self,
@@ -282,6 +529,8 @@ class Scheduler:
 
         while self._running and not self.shutdown_handler.should_shutdown:
             self._refresh_daily_schedule_if_needed()
+            self._refresh_extra_daily_schedules_if_needed()
+            self._refresh_extra_weekly_schedules_if_needed()
             self.schedule.run_pending()
             self._run_background_tasks()
             time.sleep(30)  # 每30秒检查一次
@@ -306,11 +555,14 @@ class Scheduler:
 
 
 def run_with_schedule(
-    task: Callable,
+    task: Optional[Callable] = None,
     schedule_time: str = "18:00",
     run_immediately: bool = True,
     background_tasks: Optional[List[Dict[str, Any]]] = None,
     schedule_time_provider: Optional[Callable[[], str]] = None,
+    extra_daily_tasks: Optional[List[Dict[str, Any]]] = None,
+    extra_weekly_tasks: Optional[List[Dict[str, Any]]] = None,
+    enable_primary_daily_task: bool = True,
 ):
     """
     便捷函数：使用定时调度运行任务
@@ -324,6 +576,12 @@ def run_with_schedule(
             和 `run_immediately`。`interval_seconds` 单位为秒。
         schedule_time_provider: 可选的时间提供器；调度器每轮检查前会读取，
             当返回值变化时自动重建 daily job。
+        extra_daily_tasks: 额外的每日定时任务。每项需包含 `task`、`schedule_time`
+            与 `name`，可选 `run_immediately` 与 `schedule_time_provider`。
+        extra_weekly_tasks: 额外的每周定时任务。每项需包含 `task`、`schedule_time`、
+            `weekday`（0=Monday..6=Sunday）与 `name`，可选 `run_immediately` 与
+            `schedule_time_provider`。
+        enable_primary_daily_task: 是否注册主每日任务；仅运行 extra 任务时可关闭。
     """
     scheduler = Scheduler(
         schedule_time=schedule_time,
@@ -336,7 +594,27 @@ def run_with_schedule(
             run_immediately=entry.get("run_immediately", False),
             name=entry.get("name"),
         )
-    scheduler.set_daily_task(task, run_immediately=run_immediately)
+    for entry in extra_daily_tasks or []:
+        scheduler.add_daily_task(
+            task=entry["task"],
+            schedule_time=entry["schedule_time"],
+            name=entry["name"],
+            run_immediately=entry.get("run_immediately", False),
+            schedule_time_provider=entry.get("schedule_time_provider"),
+        )
+    for entry in extra_weekly_tasks or []:
+        scheduler.add_weekly_task(
+            task=entry["task"],
+            schedule_time=entry["schedule_time"],
+            weekday=int(entry["weekday"]),
+            name=entry["name"],
+            run_immediately=entry.get("run_immediately", False),
+            schedule_time_provider=entry.get("schedule_time_provider"),
+        )
+    if enable_primary_daily_task:
+        if task is None:
+            raise ValueError("task is required when enable_primary_daily_task=True")
+        scheduler.set_daily_task(task, run_immediately=run_immediately)
     scheduler.run()
 
 
