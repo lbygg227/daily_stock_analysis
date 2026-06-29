@@ -1,11 +1,11 @@
 # -*- coding: utf-8 -*-
 """
 ===================================
-股票智能分析系统 - 大盘复盘模块（支持 A 股 / 港股 / 美股）
+股票智能分析系统 - 大盘复盘模块（支持 A 股 / 港股 / 美股 / 日本 / 韩国）
 ===================================
 
 职责：
-1. 根据 MARKET_REVIEW_REGION 配置选择市场区域（cn / hk / us / both）
+1. 根据 MARKET_REVIEW_REGION 配置选择市场区域（cn / hk / us / jp / kr / both）
 2. 执行大盘复盘分析并生成复盘报告
 3. 保存和发送复盘报告
 """
@@ -22,11 +22,13 @@ from src.market_analyzer import MarketAnalyzer
 from src.report_language import normalize_report_language
 from src.search_service import SearchService
 from src.analyzer import AnalysisResult, GeminiAnalyzer
+from src.llm.generation_backend import GenerationError
 from src.services.run_diagnostics import (
     current_diagnostic_snapshot,
     record_history_run,
     record_notification_run,
 )
+from src.schemas.market_light import MARKET_LIGHT_REGIONS
 
 
 logger = logging.getLogger(__name__)
@@ -37,6 +39,8 @@ _MARKET_REVIEW_MARKETS = (
     ('cn', 'cn_title', 'A 股'),
     ('hk', 'hk_title', '港股'),
     ('us', 'us_title', '美股'),
+    ('jp', 'jp_title', '日股'),
+    ('kr', 'kr_title', '韩股'),
 )
 _MARKET_REVIEW_REGION_ORDER = tuple(market for market, _, _ in _MARKET_REVIEW_MARKETS)
 _VALID_MARKET_REVIEW_REGIONS = frozenset(_MARKET_REVIEW_REGION_ORDER)
@@ -90,6 +94,19 @@ def _record_market_review_notification_run(
     _refresh_market_review_history_diagnostics(query_id=query_id)
 
 
+def _collect_market_light_snapshot(
+    snapshots: Dict[str, Dict[str, Any]],
+    *,
+    region: str,
+    review_result: Any,
+) -> None:
+    if region not in MARKET_LIGHT_REGIONS:
+        return
+    snapshot = getattr(review_result, "market_light_snapshot", None)
+    if isinstance(snapshot, dict) and snapshot:
+        snapshots[region] = snapshot
+
+
 def _get_market_review_text(language: str) -> dict[str, str]:
     normalized = normalize_report_language(language)
     if normalized == "en":
@@ -99,6 +116,8 @@ def _get_market_review_text(language: str) -> dict[str, str]:
             "cn_title": "# A-share Market Recap",
             "us_title": "# US Market Recap",
             "hk_title": "# HK Market Recap",
+            "jp_title": "# Japan Market Recap",
+            "kr_title": "# Korea Market Recap",
             "separator": "> Next market recap follows",
         }
     return {
@@ -107,6 +126,8 @@ def _get_market_review_text(language: str) -> dict[str, str]:
         "cn_title": "# A股大盘复盘",
         "us_title": "# 美股大盘复盘",
         "hk_title": "# 港股大盘复盘",
+        "jp_title": "# 日股大盘复盘",
+        "kr_title": "# 韩股大盘复盘",
         "separator": "> 以下为下一市场大盘复盘",
     }
 
@@ -139,6 +160,8 @@ def run_market_review(
     override_region: Optional[str] = None,
     query_id: Optional[str] = None,
     return_structured: bool = False,
+    save_report_file: bool = True,
+    persist_history: bool = True,
     trigger_source: str = "cli",
 ) -> Optional[str] | Optional[MarketReviewRunResult]:
     """
@@ -153,6 +176,8 @@ def run_market_review(
         merge_notification: 是否合并推送（跳过本次推送，由 main 层合并个股+大盘后统一发送，Issue #190）
         override_region: 覆盖 config 的 market_review_region（Issue #373 交易日过滤后有效子集）
         query_id: 历史记录关联 ID；API 后台任务会传入 task_id，CLI/Bot 为空时自动生成
+        save_report_file: 是否保存 Markdown 文件；上下文生成路径可关闭以避免多区域临时复盘互相覆盖
+        persist_history: 是否写入 analysis_history；预热路径可关闭以避免覆盖用户可见的同日大盘复盘记录
         trigger_source: 触发来源，用于日志排障（cli/schedule/api/bot/service 等）
 
     Returns:
@@ -200,7 +225,11 @@ def run_market_review(
                 )
                 review_result = mkt_analyzer.run_daily_review_with_snapshot()
                 mkt_report = review_result.report
-                market_light_snapshots[mkt] = review_result.market_light_snapshot
+                _collect_market_light_snapshot(
+                    market_light_snapshots,
+                    region=mkt,
+                    review_result=review_result,
+                )
                 market_review_payloads[mkt] = _coerce_market_review_payload(
                     review_result,
                     region=mkt,
@@ -234,7 +263,12 @@ def run_market_review(
             )
             review_result = market_analyzer.run_daily_review_with_snapshot()
             review_report = review_result.report
-            market_light_snapshots = {run_region: review_result.market_light_snapshot}
+            market_light_snapshots = {}
+            _collect_market_light_snapshot(
+                market_light_snapshots,
+                region=run_region,
+                review_result=review_result,
+            )
             market_review_payloads = {
                 run_region: _coerce_market_review_payload(
                     review_result,
@@ -255,31 +289,33 @@ def run_market_review(
                 market_review_payload,
                 wrapper_title=review_text["root_title"],
             )
-            # 保存报告到文件
-            date_str = datetime.now().strftime('%Y%m%d')
-            report_filename = f"market_review_{date_str}.md"
-            filepath = notifier.save_report_to_file(
-                markdown_report,
-                report_filename
-            )
-            logger.info(
-                "[MarketReview] component=market_review action=save_report "
-                "trigger_source=%s query_id=%s region=%s path=%s",
-                trigger_source,
-                history_query_id,
-                persist_region,
-                filepath,
-            )
+            if save_report_file:
+                # 保存报告到文件
+                date_str = datetime.now().strftime('%Y%m%d')
+                report_filename = f"market_review_{date_str}.md"
+                filepath = notifier.save_report_to_file(
+                    markdown_report,
+                    report_filename
+                )
+                logger.info(
+                    "[MarketReview] component=market_review action=save_report "
+                    "trigger_source=%s query_id=%s region=%s path=%s",
+                    trigger_source,
+                    history_query_id,
+                    persist_region,
+                    filepath,
+                )
 
-            _persist_market_review_history(
-                review_report=review_report,
-                markdown_report=markdown_report,
-                region=persist_region,
-                config=runtime_config,
-                query_id=history_query_id,
-                market_light_snapshots=market_light_snapshots,
-                market_review_payload=market_review_payload,
-            )
+            if persist_history:
+                _persist_market_review_history(
+                    review_report=review_report,
+                    markdown_report=markdown_report,
+                    region=persist_region,
+                    config=runtime_config,
+                    query_id=history_query_id,
+                    market_light_snapshots=market_light_snapshots,
+                    market_review_payload=market_review_payload,
+                )
             
             # 推送通知（合并模式下跳过，由 main 层统一发送）
             if merge_notification and send_notification:
@@ -365,6 +401,15 @@ def run_market_review(
                 )
             return review_report
         
+    except GenerationError:
+        logger.exception(
+            "[MarketReview] component=market_review action=failed "
+            "reason=generation_backend_config trigger_source=%s query_id=%s region=%s",
+            trigger_source,
+            history_query_id,
+            persist_region,
+        )
+        raise
     except Exception:
         logger.exception(
             "[MarketReview] component=market_review action=failed "
@@ -540,9 +585,14 @@ def _persist_market_review_history(
         diagnostic_snapshot = current_diagnostic_snapshot()
         if diagnostic_snapshot is not None:
             context_snapshot["diagnostics"] = diagnostic_snapshot
+        context_snapshot["analysis_context_pack_overview"] = _build_market_review_context_overview(
+            region=region,
+            report_language=report_language,
+            diagnostic_snapshot=diagnostic_snapshot,
+        )
 
         db = DatabaseManager.get_instance()
-        saved = db.save_analysis_history(
+        saved_history_id = db.save_analysis_history(
             result=result,
             query_id=history_query_id,
             report_type=MARKET_REVIEW_REPORT_TYPE,
@@ -550,22 +600,26 @@ def _persist_market_review_history(
             context_snapshot=context_snapshot,
             save_snapshot=True,
         )
-        saved_history_id = (
-            saved
-            if isinstance(saved, int) and not isinstance(saved, bool) and saved > 0
+        valid_saved_history_id = (
+            saved_history_id
+            if (
+                isinstance(saved_history_id, int)
+                and not isinstance(saved_history_id, bool)
+                and saved_history_id > 0
+            )
             else None
         )
         record_history_run(
-            report_saved=bool(saved),
-            metadata_saved=bool(saved),
-            analysis_history_id=saved_history_id,
+            report_saved=bool(saved_history_id),
+            metadata_saved=bool(saved_history_id),
+            analysis_history_id=valid_saved_history_id,
         )
         _refresh_market_review_history_diagnostics(query_id=history_query_id)
-        if saved:
+        if saved_history_id:
             logger.info("大盘复盘历史记录已保存: query_id=%s", history_query_id)
         else:
             logger.warning("大盘复盘历史记录保存失败: query_id=%s", history_query_id)
-        return saved
+        return saved_history_id
     except Exception as exc:
         record_history_run(
             report_saved=False,
@@ -574,6 +628,65 @@ def _persist_market_review_history(
         )
         logger.warning("大盘复盘历史记录保存异常，报告文件与推送流程继续: %s", exc, exc_info=True)
         return 0
+
+
+def _build_market_review_context_overview(
+    *,
+    region: str,
+    report_language: str,
+    diagnostic_snapshot: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Build a low-sensitivity overview block for market-review run-flow rendering."""
+    warnings: list[str] = []
+    counts = {
+        "available": 1,
+        "missing": 0,
+        "not_supported": 0,
+        "fallback": 0,
+        "stale": 0,
+        "estimated": 0,
+        "partial": 0,
+        "fetch_failed": 0,
+    }
+    metadata: Dict[str, Any] = {
+        "trigger_source": "market_review",
+        "scope": "market_review",
+        "report_type": MARKET_REVIEW_REPORT_TYPE,
+    }
+    if isinstance(diagnostic_snapshot, dict):
+        metadata["trigger_source"] = diagnostic_snapshot.get("trigger_source") or metadata["trigger_source"]
+        metadata["scope"] = diagnostic_snapshot.get("scope") or metadata["scope"]
+
+    label = "Market review" if report_language == "en" else "大盘复盘"
+    return {
+        "pack_version": "market_review/1.0",
+        "created_at": datetime.now().isoformat(),
+        "subject": {
+            "code": MARKET_REVIEW_HISTORY_CODE,
+            "stock_name": label,
+            "market": region,
+        },
+        "blocks": [
+            {
+                "key": MARKET_REVIEW_REPORT_TYPE,
+                "label": label,
+                "status": "available",
+                "source": MARKET_REVIEW_REPORT_TYPE,
+                "warnings": warnings,
+                "missing_reasons": [],
+            }
+        ],
+        "counts": counts,
+        "warnings": warnings,
+        "metadata": metadata,
+        "data_quality": {
+            "level": "good",
+            "overall_score": 100,
+            "available": 1,
+            "total": 1,
+            "missing": 0,
+        },
+    }
 
 
 def _summarize_market_review(review_report: str, report_language: str) -> str:

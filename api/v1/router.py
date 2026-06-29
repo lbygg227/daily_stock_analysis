@@ -24,14 +24,16 @@ from api.v1.endpoints import (
     events,
     health,
     history,
+    intelligence,
     portfolio,
     stocks,
     system_config,
     usage,
 )
 
-# 创建 v1 版本主路由
-router = APIRouter(prefix="/api/v1")
+# 创建 v1 版本主路由。
+# /api/v1 前缀在 api.app 挂载，避免新版 FastAPI 误判子路由 "" 为 empty path。
+router = APIRouter()
 
 router.include_router(
     auth.router,
@@ -103,6 +105,12 @@ router.include_router(
     alphasift.router,
     prefix="/alphasift",
     tags=["AlphaSift"]
+)
+
+router.include_router(
+    intelligence.router,
+    prefix="/intelligence",
+    tags=["Intelligence"]
 )
 
 router.include_router(
